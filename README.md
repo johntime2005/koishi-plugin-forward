@@ -1,6 +1,8 @@
-# koishi-plugin-forward
+# koishi-plugin-forward-enhanced
 
-A message forwarding plugin for Koishi, supporting cross-platform relay rules.
+A robust message forwarding plugin for Koishi, supporting cross-platform relay rules.
+
+This is an enhanced version of the original `forward` plugin, designed to fix issues with QQ private chat ID structures and undefined channel objects.
 
 ## Features
 
