@@ -1,6 +1,6 @@
 {
   "name": "koishi-plugin-forward-enhanced",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Message forwarding plugin for Koishi, supporting cross-platform relay rules.",
   "main": "lib/index.js",
   "typings": "lib/index.d.ts",
@@ -32,7 +32,7 @@
     }
   },
   "scripts": {
-    "build": "tsc && cp -r src/locales lib/locales",
+    "build": "tsc && rm -rf lib/locales && cp -r src/locales lib/locales",
     "start": "koishi start"
   },
   "peerDependencies": {
