@@ -31,7 +31,9 @@
       "zh": "消息转发插件，支持多平台消息互通"
     },
     "service": {
-      "required": ["database"]
+      "optional": [
+        "database"
+      ]
     }
   },
   "scripts": {

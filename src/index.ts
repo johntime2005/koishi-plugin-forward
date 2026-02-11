@@ -158,65 +158,61 @@ export function apply(ctx: Context, config: Config) {
     fields.add('forward')
   })
 
-  const cmd = ctx.command('forward', { authority: 3 })
-    .alias('fwd')
+  if (config.mode === 'database') {
+    ctx.inject(['database'], (ctx) => {
+      const cmd = ctx.command('forward', { authority: 3 })
+        .alias('fwd')
 
-  const register = (def: string, callback: (argv: { session: Session<never, 'forward'> }, ...args: any[]) => Promise<any>) => cmd
-    .subcommand(def, { authority: 3, checkArgCount: true })
-    .channelFields(['forward'])
-    .action((argv, ...args) => {
-        if (!argv.session) return
-        return callback(argv as { session: Session<never, 'forward'> }, ...args)
-    })
+      const register = (def: string, callback: (argv: { session: Session<never, 'forward'> }, ...args: any[]) => Promise<any>) => cmd
+        .subcommand(def, { authority: 3, checkArgCount: true })
+        .channelFields(['forward'])
+        .action((argv, ...args) => {
+             if (!argv.session) return
+             return callback(argv as { session: Session<never, 'forward'> }, ...args)
+        })
 
-  register('.add <channel:channel>', async ({ session }, id) => {
-    const targets = await getTargets(session)
-    if (targets.includes(id)) {
-      return session.text('.unchanged', [id])
-    } else {
-      targets.push(id)
-      if (config.mode === 'database') {
-        const channelId = getChannelId(session)
-        if (channelId) {
-            await ctx.database.setChannel(session.platform, channelId, { forward: targets })
+      register('.add <channel:channel>', async ({ session }, id) => {
+        const targets = await getTargets(session)
+        if (targets.includes(id)) {
+          return session.text('.unchanged', [id])
+        } else {
+          targets.push(id)
+          const channelId = getChannelId(session)
+          if (channelId) {
+              await ctx.database.setChannel(session.platform, channelId, { forward: targets })
+          }
+          return session.text('.updated', [id])
         }
-      }
-      return session.text('.updated', [id])
-    }
-  })
+      })
 
-  register('.remove <channel:channel>', async ({ session }, id) => {
-    const targets = await getTargets(session)
-    const index = targets.indexOf(id)
-    if (index >= 0) {
-      targets.splice(index, 1)
-      if (config.mode === 'database') {
-        const channelId = getChannelId(session)
-        if (channelId) {
-            await ctx.database.setChannel(session.platform, channelId, { forward: targets })
+      register('.remove <channel:channel>', async ({ session }, id) => {
+        const targets = await getTargets(session)
+        const index = targets.indexOf(id)
+        if (index >= 0) {
+          targets.splice(index, 1)
+          const channelId = getChannelId(session)
+          if (channelId) {
+              await ctx.database.setChannel(session.platform, channelId, { forward: targets })
+          }
+          return session.text('.updated', [id])
+        } else {
+          return session.text('.unchanged', [id])
         }
-      }
-      return session.text('.updated', [id])
-    } else {
-      return session.text('.unchanged', [id])
-    }
-  }).alias('forward.rm')
+      }).alias('forward.rm')
 
-  register('.clear', async ({ session }) => {
-    if (config.mode === 'database') {
+      register('.clear', async ({ session }) => {
         const channelId = getChannelId(session)
         if (channelId) {
             await ctx.database.setChannel(session.platform, channelId, { forward: [] })
         }
-    } else {
-        if (session.channel) session.channel.forward = []
-    }
-    return session.text('.updated')
-  })
+        return session.text('.updated')
+      })
 
-  register('.list', async ({ session }) => {
-    const targets = await getTargets(session)
-    if (!targets.length) return session.text('.empty')
-    return [session.text('.header'), ...targets].join('\n')
-  }).alias('forward.ls')
+      register('.list', async ({ session }) => {
+        const targets = await getTargets(session)
+        if (!targets.length) return session.text('.empty')
+        return [session.text('.header'), ...targets].join('\n')
+      }).alias('forward.ls')
+    })
+  }
 }
