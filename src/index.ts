@@ -22,6 +22,8 @@ export const Rule: Schema<Rule> = Schema.object({
 
 export const name = 'forward'
 
+export const inject = { optional: ['database'] }
+
 export interface Config {
   mode?: 'database' | 'config'
   rules?: Rule[]
