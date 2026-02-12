@@ -217,8 +217,6 @@ export function apply(ctx: Context, config: Config) {
         if (!selfId) return session.text('.no-bot')
 
         const targets = await getTargets(session)
-        logger.info('add: platform=%s channelId=%s targets=%o', session.platform, getChannelId(session), targets)
-
         if (targets.some(t => t.platform === parsed.platform && t.channelId === parsed.channelId)) {
           return session.text('.unchanged', [formatTarget({ ...parsed, selfId })])
         }
@@ -227,8 +225,11 @@ export function apply(ctx: Context, config: Config) {
         targets.push(entry)
         const channelId = getChannelId(session)
         if (channelId) {
-          await ctx.database.setChannel(session.platform, channelId, { forward: targets })
-          logger.info('add: saved forward=%o for %s:%s', targets, session.platform, channelId)
+          await ctx.database.upsert('channel', [{
+            platform: session.platform,
+            id: channelId,
+            forward: targets,
+          }], ['platform', 'id'])
         }
         return session.text('.updated', [formatTarget(entry)])
       })
@@ -243,7 +244,11 @@ export function apply(ctx: Context, config: Config) {
           targets.splice(index, 1)
           const channelId = getChannelId(session)
           if (channelId) {
-            await ctx.database.setChannel(session.platform, channelId, { forward: targets })
+            await ctx.database.upsert('channel', [{
+              platform: session.platform,
+              id: channelId,
+              forward: targets,
+            }], ['platform', 'id'])
           }
           return session.text('.updated', [id])
         } else {
@@ -254,7 +259,11 @@ export function apply(ctx: Context, config: Config) {
       register('.clear', async ({ session }) => {
         const channelId = getChannelId(session)
         if (channelId) {
-          await ctx.database.setChannel(session.platform, channelId, { forward: [] })
+          await ctx.database.upsert('channel', [{
+            platform: session.platform,
+            id: channelId,
+            forward: [],
+          }], ['platform', 'id'])
         }
         return session.text('.updated')
       })
