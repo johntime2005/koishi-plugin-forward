@@ -205,10 +205,19 @@ export function apply(ctx: Context, config: Config) {
   })
 
   async function sendNotification(session: Session, text: string) {
+    logger.info('[forward] sendNotification called, platform=%s, type=%s, text=%s', session.platform, session.type, text)
+    logger.info('[forward] session.channelId=%s, session.guildId=%s, event.channel=%o, event.guild=%o',
+      session.channelId, session.guildId, session.event?.channel, session.event?.guild)
+
     const channelId = getChannelId(session)
-    if (!channelId) return
+    logger.info('[forward] resolved channelId=%s', channelId)
+    if (!channelId) {
+      logger.warn('[forward] no channelId resolved, skipping')
+      return
+    }
 
     const cid = `${session.platform}:${channelId}`
+    logger.info('[forward] cid=%s, mode=%s', cid, config.mode)
     let targets: ForwardTarget[] = []
 
     if (config.mode === 'database') {
@@ -217,6 +226,7 @@ export function apply(ctx: Context, config: Config) {
           platform: session.platform,
           id: channelId,
         }, ['forward'])
+        logger.info('[forward] db query result: %o', channel)
         if (channel) {
           targets = channel.forward || []
         }
@@ -224,6 +234,7 @@ export function apply(ctx: Context, config: Config) {
         logger.warn('Failed to fetch channel targets:', error)
       }
     } else {
+      logger.info('[forward] config rules: %o', config.rules)
       targets = (config.rules || [])
         .filter(rule => rule.source === cid)
         .map(rule => {
@@ -234,6 +245,8 @@ export function apply(ctx: Context, config: Config) {
         .filter(Boolean)
     }
 
+    logger.info('[forward] resolved %d targets: %o', targets.length, targets)
+
     for (const target of targets) {
       try {
         const { platform, channelId: targetChannelId, selfId, guildId } = target
@@ -242,6 +255,7 @@ export function apply(ctx: Context, config: Config) {
           logger.warn('bot not found: %s:%s', platform, selfId)
           continue
         }
+        logger.info('[forward] sending to %s:%s', platform, targetChannelId)
         await bot.sendMessage(targetChannelId, text, guildId)
       } catch (error) {
         logger.warn(error)
@@ -249,12 +263,12 @@ export function apply(ctx: Context, config: Config) {
     }
   }
 
-  // 去重缓存：防止 internal/session 在 session 生命周期中多次触发导致重复通知
+  // 去重缓存：防止事件在 session 生命周期中多次触发导致重复通知
   const recentNotifications = new Map<string, number>()
   const NOTIFICATION_DEDUP_MS = 3000
 
-  ctx.on('internal/session', (session) => {
-    if (session.platform !== 'minecraft') return
+  const handleEvent = (session: Session) => {
+    logger.info('[forward] %s event received, user=%o', session.type, session.event?.user)
     const name = session.event?.user?.name || session.event?.member?.nick || session.userId
     let text: string
 
@@ -265,24 +279,6 @@ export function apply(ctx: Context, config: Config) {
       case 'guild-member-removed':
         text = `${name} 离开了服务器`
         break
-      case 'notice': {
-        const subtype = session.event?.subtype || (session as any).subtype
-        const content = session.event?.message?.content
-        if (subtype === 'player-death') {
-          text = content || `${name} 死了`
-        } else if (subtype === 'player-achievement') {
-          let achievementName: string
-          if (typeof content === 'object' && content !== null) {
-            achievementName = (content as any).text || (content as any).translate || JSON.stringify(content)
-          } else {
-            achievementName = content || '未知成就'
-          }
-          text = `${name} 达成了成就 [${achievementName}]`
-        } else {
-          return
-        }
-        break
-      }
       default:
         return
     }
@@ -306,7 +302,10 @@ export function apply(ctx: Context, config: Config) {
     }
 
     sendNotification(session, text)
-  })
+  }
+
+  ctx.on('guild-member-added', handleEvent)
+  ctx.on('guild-member-removed', handleEvent)
 
   ctx.model.extend('channel', {
     forward: { type: 'json', initial: [] },
