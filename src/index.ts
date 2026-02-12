@@ -179,7 +179,6 @@ export function apply(ctx: Context, config: Config) {
 
     const tasks: Promise<void>[] = []
     const targets = await getTargets(session)
-    logger.debug('middleware: cid=%s targets=%o', session.cid, targets)
 
     for (const target of targets) {
       tasks.push(sendRelay(session, target))
