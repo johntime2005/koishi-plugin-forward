@@ -133,10 +133,11 @@ export function apply(ctx: Context, config: Config) {
   }
 
   function getChannelId(session: Session) {
-    if (typeof session.channelId === 'object' && (session.channelId as any).id) {
-      return (session.channelId as any).id
+    const raw = session.channelId
+    if (typeof raw === 'object' && (raw as any).id) {
+      return (raw as any).id
     }
-    return session.channelId
+    return raw || session.event?.channel?.id || session.guildId
   }
 
   async function getTargets(session: Session<never, 'forward'>): Promise<ForwardTarget[]> {
@@ -186,6 +187,61 @@ export function apply(ctx: Context, config: Config) {
 
     const [result] = await Promise.all([next(), ...tasks])
     return result
+  })
+
+  async function sendNotification(session: Session, text: string) {
+    const channelId = getChannelId(session)
+    if (!channelId) return
+
+    const cid = `${session.platform}:${channelId}`
+    let targets: ForwardTarget[] = []
+
+    if (config.mode === 'database') {
+      try {
+        const [channel] = await ctx.database.get('channel', {
+          platform: session.platform,
+          id: channelId,
+        }, ['forward'])
+        if (channel) {
+          targets = channel.forward || []
+        }
+      } catch (error) {
+        logger.warn('Failed to fetch channel targets:', error)
+      }
+    } else {
+      targets = (config.rules || [])
+        .filter(rule => rule.source === cid)
+        .map(rule => {
+          const parsed = parseTarget(rule.target)
+          if (!parsed) return null!
+          return { ...parsed, selfId: rule.selfId, guildId: rule.guildId }
+        })
+        .filter(Boolean)
+    }
+
+    for (const target of targets) {
+      try {
+        const { platform, channelId: targetChannelId, selfId, guildId } = target
+        const bot = ctx.bots[`${platform}:${selfId}`]
+        if (!bot) {
+          logger.warn('bot not found: %s:%s', platform, selfId)
+          continue
+        }
+        await bot.sendMessage(targetChannelId, text, guildId)
+      } catch (error) {
+        logger.warn(error)
+      }
+    }
+  }
+
+  ctx.on('guild-member-added', (session) => {
+    const name = session.event?.user?.name || session.event?.member?.nick || session.userId
+    sendNotification(session, `${name} 加入了服务器`)
+  })
+
+  ctx.on('guild-member-removed', (session) => {
+    const name = session.event?.user?.name || session.event?.member?.nick || session.userId
+    sendNotification(session, `${name} 离开了服务器`)
   })
 
   ctx.model.extend('channel', {
