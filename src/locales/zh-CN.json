@@ -8,7 +8,8 @@
       "description": "添加目标频道",
       "messages": {
         "unchanged": "{0} 已经是当前频道的目标频道。",
-        "updated": "已成功添加目标频道 {0}。"
+        "updated": "已成功添加目标频道 {0}。",
+        "no-bot": "找不到该平台的可用机器人。"
       }
     },
     "forward.remove": {

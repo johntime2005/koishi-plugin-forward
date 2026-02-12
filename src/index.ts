@@ -1,8 +1,15 @@
 import { Context, Session, Schema, segment, Time, Dict } from 'koishi'
 
+export interface ForwardTarget {
+  platform: string
+  channelId: string
+  selfId: string
+  guildId?: string
+}
+
 declare module 'koishi' {
   interface Channel {
-    forward: string[]
+    forward: ForwardTarget[]
   }
 }
 
@@ -49,10 +56,18 @@ export const Config: Schema<Config> = Schema.intersect([
   }),
 ] as const)
 
+interface RelayEntry {
+  platform: string
+  channelId: string
+  selfId: string
+  guildId?: string
+}
+
 export function apply(ctx: Context, config: Config) {
   ctx.i18n.define('zh-CN', require('./locales/zh-CN'))
 
-  const relayMap: Dict<Rule> = {}
+  const logger = ctx.logger('forward')
+  const relayMap: Dict<RelayEntry> = {}
 
   function parseTarget(target: string): { platform: string, channelId: string } | null {
     const platforms = [...new Set(ctx.bots.map(b => b.platform))]
@@ -67,30 +82,28 @@ export function apply(ctx: Context, config: Config) {
     return { platform: target.slice(0, idx), channelId: target.slice(idx + 1) }
   }
 
-  async function sendRelay(session: Session<never, 'forward'>, rule: Partial<Rule>) {
+  function formatTarget(t: ForwardTarget): string {
+    return `${t.platform}:${t.channelId}`
+  }
+
+  function findBot(platform: string): string | undefined {
+    for (const bot of ctx.bots) {
+      if (bot.platform === platform) return bot.selfId
+    }
+  }
+
+  async function sendRelay(session: Session<never, 'forward'>, entry: RelayEntry) {
     const { author, stripped } = session
     let { content } = stripped
     if (!content) return
 
     try {
-      if (!rule.target) return
-      const parsed = parseTarget(rule.target)
-      if (!parsed) return
-      const { platform, channelId } = parsed
-
-      if (!rule.selfId) {
-        try {
-          const channel = await ctx.database.getChannel(platform, channelId, ['assignee', 'guildId'])
-          if (channel?.assignee) {
-            rule.selfId = channel.assignee
-            rule.guildId = channel.guildId
-          }
-        } catch {}
-        if (!rule.selfId) return
+      const { platform, channelId, selfId, guildId } = entry
+      const bot = ctx.bots[`${platform}:${selfId}`]
+      if (!bot) {
+        logger.warn('bot not found: %s:%s', platform, selfId)
+        return
       }
-
-      const bot = ctx.bots[`${platform}:${rule.selfId}`]
-      if (!bot) return
 
       if (segment.select(stripped.content, 'at').length && session.guildId) {
         const dict = await session.bot.getGuildMemberMap(session.guildId)
@@ -103,11 +116,11 @@ export function apply(ctx: Context, config: Config) {
       }
 
       content = `${author.name}: ${content}`
-      await bot.sendMessage(channelId, content, rule.guildId).then((ids) => {
+      await bot.sendMessage(channelId, content, guildId).then((ids) => {
         for (const id of ids) {
           relayMap[id] = {
-            source: rule.target!,
-            target: session.cid,
+            platform: session.platform,
+            channelId: getChannelId(session)!,
             selfId: session.selfId,
             guildId: session.guildId,
           }
@@ -115,7 +128,7 @@ export function apply(ctx: Context, config: Config) {
         }
       })
     } catch (error) {
-      ctx.logger('forward').warn(error)
+      logger.warn(error)
     }
   }
 
@@ -126,7 +139,7 @@ export function apply(ctx: Context, config: Config) {
     return session.channelId
   }
 
-  async function getTargets(session: Session<never, 'forward'>) {
+  async function getTargets(session: Session<never, 'forward'>): Promise<ForwardTarget[]> {
     if (config.mode === 'database') {
       if (session.channel && Array.isArray(session.channel.forward)) {
         return session.channel.forward
@@ -139,12 +152,11 @@ export function apply(ctx: Context, config: Config) {
             platform: session.platform,
             id: channelId,
           }, ['forward'])
-          
           if (channel) {
             return channel.forward || []
           }
         } catch (error) {
-          ctx.logger('forward').warn('Failed to fetch channel targets:', error)
+          logger.warn('Failed to fetch channel targets:', error)
         }
       }
       return []
@@ -152,7 +164,12 @@ export function apply(ctx: Context, config: Config) {
 
     return (config.rules || [])
       .filter(rule => rule.source === session.cid)
-      .map(rule => rule.target)
+      .map(rule => {
+        const parsed = parseTarget(rule.target)
+        if (!parsed) return null!
+        return { ...parsed, selfId: rule.selfId, guildId: rule.guildId }
+      })
+      .filter(Boolean)
   }
 
   ctx.middleware(async (session: Session<never, 'forward'>, next) => {
@@ -162,17 +179,17 @@ export function apply(ctx: Context, config: Config) {
 
     const tasks: Promise<void>[] = []
     const targets = await getTargets(session)
-    
+
     for (const target of targets) {
-      tasks.push(sendRelay(session, { target }))
+      tasks.push(sendRelay(session, target))
     }
-    
+
     const [result] = await Promise.all([next(), ...tasks])
     return result
   })
 
   ctx.model.extend('channel', {
-    forward: 'list',
+    forward: { type: 'json', initial: [] },
   })
 
   ctx.before('attach-channel', (session, fields) => {
@@ -193,27 +210,36 @@ export function apply(ctx: Context, config: Config) {
         })
 
       register('.add <channel:channel>', async ({ session }, id) => {
+        const parsed = parseTarget(id)
+        if (!parsed) return session.text('.no-bot')
+        const selfId = findBot(parsed.platform)
+        if (!selfId) return session.text('.no-bot')
+
         const targets = await getTargets(session)
-        if (targets.includes(id)) {
-          return session.text('.unchanged', [id])
-        } else {
-          targets.push(id)
-          const channelId = getChannelId(session)
-          if (channelId) {
-              await ctx.database.setChannel(session.platform, channelId, { forward: targets })
-          }
-          return session.text('.updated', [id])
+        if (targets.some(t => t.platform === parsed.platform && t.channelId === parsed.channelId)) {
+          return session.text('.unchanged', [formatTarget({ ...parsed, selfId })])
         }
+
+        const entry: ForwardTarget = { ...parsed, selfId }
+        targets.push(entry)
+        const channelId = getChannelId(session)
+        if (channelId) {
+          await ctx.database.setChannel(session.platform, channelId, { forward: targets })
+        }
+        return session.text('.updated', [formatTarget(entry)])
       })
 
       register('.remove <channel:channel>', async ({ session }, id) => {
+        const parsed = parseTarget(id)
+        if (!parsed) return session.text('.unchanged', [id])
+
         const targets = await getTargets(session)
-        const index = targets.indexOf(id)
+        const index = targets.findIndex(t => t.platform === parsed.platform && t.channelId === parsed.channelId)
         if (index >= 0) {
           targets.splice(index, 1)
           const channelId = getChannelId(session)
           if (channelId) {
-              await ctx.database.setChannel(session.platform, channelId, { forward: targets })
+            await ctx.database.setChannel(session.platform, channelId, { forward: targets })
           }
           return session.text('.updated', [id])
         } else {
@@ -224,7 +250,7 @@ export function apply(ctx: Context, config: Config) {
       register('.clear', async ({ session }) => {
         const channelId = getChannelId(session)
         if (channelId) {
-            await ctx.database.setChannel(session.platform, channelId, { forward: [] })
+          await ctx.database.setChannel(session.platform, channelId, { forward: [] })
         }
         return session.text('.updated')
       })
@@ -232,7 +258,7 @@ export function apply(ctx: Context, config: Config) {
       register('.list', async ({ session }) => {
         const targets = await getTargets(session)
         if (!targets.length) return session.text('.empty')
-        return [session.text('.header'), ...targets].join('\n')
+        return [session.text('.header'), ...targets.map(formatTarget)].join('\n')
       }).alias('forward.ls')
     })
   }
