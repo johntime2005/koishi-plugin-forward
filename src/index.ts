@@ -54,6 +54,19 @@ export function apply(ctx: Context, config: Config) {
 
   const relayMap: Dict<Rule> = {}
 
+  function parseTarget(target: string): { platform: string, channelId: string } | null {
+    const platforms = [...new Set(ctx.bots.map(b => b.platform))]
+      .sort((a, b) => b!.length - a!.length)
+    for (const p of platforms) {
+      if (p && target.startsWith(p + ':')) {
+        return { platform: p, channelId: target.slice(p.length + 1) }
+      }
+    }
+    const idx = target.indexOf(':')
+    if (idx < 0) return null
+    return { platform: target.slice(0, idx), channelId: target.slice(idx + 1) }
+  }
+
   async function sendRelay(session: Session<never, 'forward'>, rule: Partial<Rule>) {
     const { author, stripped } = session
     let { content } = stripped
@@ -61,16 +74,23 @@ export function apply(ctx: Context, config: Config) {
 
     try {
       if (!rule.target) return
-      const platform = rule.target.split(':', 1)[0]
-      const channelId = rule.target.slice(platform.length + 1)
+      const parsed = parseTarget(rule.target)
+      if (!parsed) return
+      const { platform, channelId } = parsed
+
       if (!rule.selfId) {
-        const channel = await ctx.database.getChannel(platform, channelId, ['assignee', 'guildId'])
-        if (!channel || !channel.assignee) return
-        rule.selfId = channel.assignee
-        rule.guildId = channel.guildId
+        try {
+          const channel = await ctx.database.getChannel(platform, channelId, ['assignee', 'guildId'])
+          if (channel?.assignee) {
+            rule.selfId = channel.assignee
+            rule.guildId = channel.guildId
+          }
+        } catch {}
+        if (!rule.selfId) return
       }
 
       const bot = ctx.bots[`${platform}:${rule.selfId}`]
+      if (!bot) return
 
       if (segment.select(stripped.content, 'at').length && session.guildId) {
         const dict = await session.bot.getGuildMemberMap(session.guildId)
@@ -136,8 +156,7 @@ export function apply(ctx: Context, config: Config) {
   }
 
   ctx.middleware(async (session: Session<never, 'forward'>, next) => {
-    const { quote = {}, isDirect } = session
-    if (isDirect) return next()
+    const { quote = {} } = session
     const data = quote.id ? relayMap[quote.id] : undefined
     if (data) return sendRelay(session, data)
 
