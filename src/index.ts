@@ -179,6 +179,7 @@ export function apply(ctx: Context, config: Config) {
 
     const tasks: Promise<void>[] = []
     const targets = await getTargets(session)
+    logger.debug('middleware: cid=%s targets=%o', session.cid, targets)
 
     for (const target of targets) {
       tasks.push(sendRelay(session, target))
@@ -216,6 +217,8 @@ export function apply(ctx: Context, config: Config) {
         if (!selfId) return session.text('.no-bot')
 
         const targets = await getTargets(session)
+        logger.info('add: platform=%s channelId=%s targets=%o', session.platform, getChannelId(session), targets)
+
         if (targets.some(t => t.platform === parsed.platform && t.channelId === parsed.channelId)) {
           return session.text('.unchanged', [formatTarget({ ...parsed, selfId })])
         }
@@ -225,6 +228,7 @@ export function apply(ctx: Context, config: Config) {
         const channelId = getChannelId(session)
         if (channelId) {
           await ctx.database.setChannel(session.platform, channelId, { forward: targets })
+          logger.info('add: saved forward=%o for %s:%s', targets, session.platform, channelId)
         }
         return session.text('.updated', [formatTarget(entry)])
       })
