@@ -265,6 +265,7 @@ export function apply(ctx: Context, config: Config) {
       case 'guild-member-removed':
         text = `${name} 离开了服务器`
         break
+
       default:
         return
     }
