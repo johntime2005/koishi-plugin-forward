@@ -205,19 +205,10 @@ export function apply(ctx: Context, config: Config) {
   })
 
   async function sendNotification(session: Session, text: string) {
-    logger.info('[forward] sendNotification called, platform=%s, type=%s, text=%s', session.platform, session.type, text)
-    logger.info('[forward] session.channelId=%s, session.guildId=%s, event.channel=%o, event.guild=%o',
-      session.channelId, session.guildId, session.event?.channel, session.event?.guild)
-
     const channelId = getChannelId(session)
-    logger.info('[forward] resolved channelId=%s', channelId)
-    if (!channelId) {
-      logger.warn('[forward] no channelId resolved, skipping')
-      return
-    }
+    if (!channelId) return
 
     const cid = `${session.platform}:${channelId}`
-    logger.info('[forward] cid=%s, mode=%s', cid, config.mode)
     let targets: ForwardTarget[] = []
 
     if (config.mode === 'database') {
@@ -226,7 +217,6 @@ export function apply(ctx: Context, config: Config) {
           platform: session.platform,
           id: channelId,
         }, ['forward'])
-        logger.info('[forward] db query result: %o', channel)
         if (channel) {
           targets = channel.forward || []
         }
@@ -234,7 +224,6 @@ export function apply(ctx: Context, config: Config) {
         logger.warn('Failed to fetch channel targets:', error)
       }
     } else {
-      logger.info('[forward] config rules: %o', config.rules)
       targets = (config.rules || [])
         .filter(rule => rule.source === cid)
         .map(rule => {
@@ -245,8 +234,6 @@ export function apply(ctx: Context, config: Config) {
         .filter(Boolean)
     }
 
-    logger.info('[forward] resolved %d targets: %o', targets.length, targets)
-
     for (const target of targets) {
       try {
         const { platform, channelId: targetChannelId, selfId, guildId } = target
@@ -255,7 +242,6 @@ export function apply(ctx: Context, config: Config) {
           logger.warn('bot not found: %s:%s', platform, selfId)
           continue
         }
-        logger.info('[forward] sending to %s:%s', platform, targetChannelId)
         await bot.sendMessage(targetChannelId, text, guildId)
       } catch (error) {
         logger.warn(error)
