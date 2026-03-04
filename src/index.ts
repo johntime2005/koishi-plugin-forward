@@ -86,10 +86,25 @@ export function apply(ctx: Context, config: Config) {
     return `${t.platform}:${t.channelId}`
   }
 
-  function findBot(platform: string): string | undefined {
-    for (const bot of ctx.bots) {
-      if (bot.platform === platform) return bot.selfId
+  function findBot(session: Session, platform: string, channelId: string): string | undefined {
+    // 如果恰好是通过同一平台的会话触发，且有 selfId，优先使用当前机器人
+    if (session.platform === platform && session.selfId) {
+      return session.selfId
     }
+
+    let fallbackBot: string | undefined
+    for (const bot of ctx.bots) {
+      if (bot.platform === platform) {
+        // 对于部分平台 (例如 minecraft)，channelId 通常等同于 bot.selfId 或是 bot.config.serverName
+        if (bot.selfId === channelId || (bot as any).config?.serverName === channelId) {
+          return bot.selfId
+        }
+        if (!fallbackBot) {
+          fallbackBot = bot.selfId
+        }
+      }
+    }
+    return fallbackBot
   }
 
   async function sendRelay(session: Session<never, 'forward'>, entry: RelayEntry) {
@@ -234,14 +249,63 @@ export function apply(ctx: Context, config: Config) {
     }
   }
 
-  ctx.on('guild-member-added', (session) => {
-    const name = session.event?.user?.name || session.event?.member?.nick || session.userId
-    sendNotification(session, `${name} 加入了服务器`)
-  })
+  // 去重缓存：防止 internal/session 在 session 生命周期中多次触发导致重复通知
+  const recentNotifications = new Map<string, number>()
+  const NOTIFICATION_DEDUP_MS = 3000
 
-  ctx.on('guild-member-removed', (session) => {
+  ctx.on('internal/session', (session) => {
+    if (session.platform !== 'minecraft') return
     const name = session.event?.user?.name || session.event?.member?.nick || session.userId
-    sendNotification(session, `${name} 离开了服务器`)
+    let text: string
+
+    switch (session.type) {
+      case 'guild-member-added':
+        text = `${name} 加入了服务器`
+        break
+      case 'guild-member-removed':
+        text = `${name} 离开了服务器`
+        break
+      case 'notice': {
+        const subtype = session.event?.subtype || (session as any).subtype
+        const content = session.event?.message?.content
+        if (subtype === 'player-death') {
+          text = content || `${name} 死了`
+        } else if (subtype === 'player-achievement') {
+          let achievementName: string
+          if (typeof content === 'object' && content !== null) {
+            achievementName = (content as any).text || (content as any).translate || JSON.stringify(content)
+          } else {
+            achievementName = content || '未知成就'
+          }
+          text = `${name} 达成了成就 [${achievementName}]`
+        } else {
+          return
+        }
+        break
+      }
+      default:
+        return
+    }
+
+    // 去重：同一事件在短时间窗口内只发送一次
+    const dedupKey = `${session.type}:${name}:${session.event?.guild?.id || ''}`
+    const now = Date.now()
+    const lastSent = recentNotifications.get(dedupKey)
+    if (lastSent && now - lastSent < NOTIFICATION_DEDUP_MS) {
+      return
+    }
+    recentNotifications.set(dedupKey, now)
+
+    // 定期清理过期条目
+    if (recentNotifications.size > 100) {
+      for (const [key, ts] of recentNotifications) {
+        if (now - ts > NOTIFICATION_DEDUP_MS * 2) {
+          recentNotifications.delete(key)
+        }
+      }
+    }
+
+    sendNotification(session, text)
   })
 
   ctx.model.extend('channel', {
@@ -268,7 +332,7 @@ export function apply(ctx: Context, config: Config) {
       register('.add <channel:channel>', async ({ session }, id) => {
         const parsed = parseTarget(id)
         if (!parsed) return session.text('.no-bot')
-        const selfId = findBot(parsed.platform)
+        const selfId = findBot(session, parsed.platform, parsed.channelId)
         if (!selfId) return session.text('.no-bot')
 
         const targets = await getTargets(session)
